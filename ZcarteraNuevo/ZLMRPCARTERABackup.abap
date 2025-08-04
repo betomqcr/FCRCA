@@ -4,8 +4,6 @@
 *& Autor: Franklin Madrigal
 *& Fecha de Creación: 21.03.2022
 *& Descripción: Extraccion de toda informacion de Cartera
-*& Personal Modificación: Alberto Martínez Quesada
-*& Fecha Modificación: 17/07/2025
 *&---------------------------------------------------------------------*
 REPORT  zlmrpcartera NO STANDARD PAGE HEADING.
 
@@ -1460,7 +1458,7 @@ END-OF-SELECTION.
     READ TABLE gt_zenti ASSIGNING <fs_zenti> WITH TABLE KEY zcodentidad = <fs_vdarl>-zzcodentigar.
     IF ( sy-subrc = 0 AND <fs_zenti> IS ASSIGNED ).
 
-      gw_datos-zdescripenti = <fs_zenti>-zdescripcion. "Descripcion Cesion Garantia
+      gw_datos-zdescripenti = <fs_zenti>-zdescripcion. "Descripcion Cesion Garantia
 
     ENDIF.
 
@@ -2385,7 +2383,7 @@ FORM f_show_alv USING pt_table
   mc_columna 'MONTO_ORI'        'Monto Original'                   '' '' ''.
   mc_columna 'CUOTA_PEN'        'Cuotas Pendientes'                '' '' ''.
   mc_columna 'CUOTA_SSEGU'      'Cuota Sin Seguro'                 '' '' ''.
-  mc_columna 'CXC_SEG'          'Cuenta por Cobrar Seguros'        '' '' ''.
+  mc_columna 'CXC_SEG'          'Cuenta por Cobrar Seguros'        '' '' 'X'.
   mc_columna 'SALDO_CREDITO'    'Saldo Monto Credito Base'         '' '' ''.
   mc_columna 'INT_ACUMULA'      'Intereses acumulados'             '' '' ''.
   mc_columna 'INT_SACUMULA'     'Intereses en suspenso'            '' '' ''.
@@ -2851,56 +2849,60 @@ ENDFORM.                    " PROCESS_CALLBACK_PROG
 *&      Form  F_INTERESES
 *&---------------------------------------------------------------------*
 FORM f_intereses USING value(pt_bsid) LIKE gt_bsid[]
-                 CHANGING pa_sus_acum LIKE gt_sus_acum[].
+              CHANGING pa_sus_acum LIKE gt_sus_acum[].
 
-  DATA: lt_bsid      LIKE gt_bsid[],
-        lt_interes   TYPE STANDARD TABLE OF ty_partida,
-        lw_interes   TYPE ty_partida,
-        lt_pagos     LIKE gt_pagos[],
-        lv_180       TYPE datum,
-        lv_fecha     TYPE datum,
-        gv_days      TYPE i.
+  DATA: lt_bsid    LIKE gt_bsid[],
+        lt_interes TYPE STANDARD TABLE OF ty_partida,
+        lw_interes TYPE ty_partida,
+        lt_pagos   LIKE gt_pagos[],
+        lv_180     TYPE datum,
+        lv_fecha   TYPE datum,
+        flag       TYPE c.
 
-  FIELD-SYMBOLS: <fs_lt_bsid> TYPE bsid,
-                 <fs_pagos>   TYPE ty_pagos,
-                 <fs_interes> TYPE ty_partida.
+  FIELD-SYMBOLS: <fs_lt_bsid> TYPE bsid.
 
   lt_bsid[] = pt_bsid[].
 
+*Calcular la fecha mas antigua
   SORT: lt_bsid BY vertn zfbdt ASCENDING,
         pt_bsid BY vertn zfbdt ASCENDING.
 
   DELETE ADJACENT DUPLICATES FROM lt_bsid COMPARING vertn.
 
   DELETE pt_bsid WHERE vbewa+1(3) <> '110'.
-
+*--------------------------------------------------------------------*
   LOOP AT lt_bsid ASSIGNING <fs_lt_bsid>.
+
     CLEAR: lv_180, lv_fecha.
+
     lv_180 = <fs_lt_bsid>-zfbdt + 180.
 
     IF lv_180 >= pa_fecha.
+
       lv_fecha  = pa_fecha.
     ELSE.
       lv_fecha  = lv_180.
+
     ENDIF.
 
     LOOP AT pt_bsid ASSIGNING <fs_bsid> WHERE ( vertn = <fs_lt_bsid>-vertn ).
+
       CLEAR: gw_partida.
 
       IF <fs_bsid>-zfbdt <=  lv_fecha .
-        <fs_bsid>-kunnr = 'INT.ACU'.
+        <fs_bsid>-kunnr = 'INT.ACU'. "INTERESES ACUMULADOS.
       ELSE.
-        <fs_bsid>-kunnr = 'INT.SUS'.
+        <fs_bsid>-kunnr = 'INT.SUS'. "INTERESES EN SUSPENSO.
       ENDIF.
 
       MOVE-CORRESPONDING <fs_bsid> TO gw_partida.
+
       COLLECT gw_partida INTO lt_interes[].
+
     ENDLOOP.
+
   ENDLOOP.
 
-
-* Modificacion Principal: Lógica para movimientos 8301. Esta parte se modifica.
-* --------------------------------------------------------------------
   SELECT ranl sbewart ddispo SUM( bbwhr )
     INTO TABLE lt_pagos
     FROM vissr_vdbevi
@@ -2910,52 +2912,45 @@ FORM f_intereses USING value(pt_bsid) LIKE gt_bsid[]
      AND dbudat = pa_fecha
    GROUP BY ranl sbewart ddispo.
 
-  "* --> Inicia la nueva lógica para procesar los ajustes 8301
-  IF lt_pagos[] IS NOT INITIAL.
-    SORT lt_bsid BY vertn. " Ordenar para lectura rápida
+  IF lt_interes[] IS INITIAL."INTERESES ACUMULADOS.
 
     LOOP AT lt_pagos ASSIGNING <fs_pagos>.
-      CLEAR gv_days.
-
-      " Leemos la partida más antigua para este contrato
-      READ TABLE lt_bsid ASSIGNING <fs_lt_bsid> WITH KEY vertn = <fs_pagos>-ranl BINARY SEARCH.
-      IF sy-subrc = 0.
-        " Calculamos los días de mora totales del contrato
-        gv_days = pa_fecha - <fs_lt_bsid>-zfbdt.
-      ENDIF.
-
-      " Aplicamos la regla de negocio explícita
-      IF gv_days >= 180.
-        " Sumar a SUSPENSO, creándolo si no existe.
-        READ TABLE lt_interes ASSIGNING <fs_interes> WITH KEY vertn = <fs_pagos>-ranl kunnr = 'INT.SUS'.
-        IF sy-subrc = 0.
-          " La categoría ya existe, solo modificamos el monto
-          <fs_interes>-wrbtr = <fs_interes>-wrbtr + <fs_pagos>-bbwhr.
-        ELSE.
-          " La categoría no existe, la creamos desde cero
-          CLEAR lw_interes.
-          lw_interes-vertn = <fs_pagos>-ranl.
-          lw_interes-kunnr = 'INT.SUS'.
-          lw_interes-wrbtr = <fs_pagos>-bbwhr.
-          APPEND lw_interes TO lt_interes.
-        ENDIF.
-      ELSE.
-        " Sumar a ACUMULADO (la mora es menor a 180 días)
-        READ TABLE lt_interes ASSIGNING <fs_interes> WITH KEY vertn = <fs_pagos>-ranl kunnr = 'INT.ACU'.
-        IF sy-subrc = 0.
-          <fs_interes>-wrbtr = <fs_interes>-wrbtr + <fs_pagos>-bbwhr.
-        ELSE.
-          " Si ni siquiera existe ACUM, lo creamos (caso muy raro)
-          CLEAR lw_interes.
-          lw_interes-vertn = <fs_pagos>-ranl.
-          lw_interes-kunnr = 'INT.ACU'.
-          lw_interes-wrbtr = <fs_pagos>-bbwhr.
-          APPEND lw_interes TO lt_interes.
-        ENDIF.
-      ENDIF.
+      CLEAR: lw_interes.
+      lw_interes-vertn = <fs_pagos>-ranl.
+      lw_interes-kunnr = 'INT.ACU'.
+      lw_interes-wrbtr = lw_interes-wrbtr + <fs_pagos>-bbwhr.
+      APPEND lw_interes TO lt_interes[].
     ENDLOOP.
+  ELSE.
+
+    IF lt_pagos[] IS NOT INITIAL.
+
+      CLEAR flag.
+      SORT: lt_pagos   BY ranl,
+            lt_interes BY vertn.
+
+      LOOP AT lt_pagos ASSIGNING <fs_pagos>.
+
+        READ TABLE lt_interes INTO lw_interes WITH KEY vertn = <fs_pagos>-ranl
+                                                       kunnr = 'INT.SUS'.
+        IF sy-subrc = 0.
+          lw_interes-wrbtr = lw_interes-wrbtr + <fs_pagos>-bbwhr.
+          flag  = 'X'.
+        ENDIF.
+
+        IF flag IS INITIAL.
+          READ TABLE lt_interes INTO lw_interes WITH KEY vertn = <fs_pagos>-ranl
+                                                         kunnr = 'INT.ACU'.
+          IF sy-subrc = 0.
+            lw_interes-wrbtr = lw_interes-wrbtr + <fs_pagos>-bbwhr.
+          ENDIF.
+        ENDIF.
+
+        APPEND lw_interes TO lt_interes[].
+
+      ENDLOOP.
+    ENDIF.
   ENDIF.
-  "* --> Fin de la nueva lógica
 
   pa_sus_acum[] = lt_interes[].
 
